@@ -1,10 +1,72 @@
 # CyberPatriot Hardening Scripts
 
-This repository contains ready-to-run hardening automation for both Windows 10
-and Debian-based Linux images that appear in CyberPatriot-style defensive
-competitions. Each script focuses on quickly configuring built-in protections,
-auditing local accounts, and generating a report that teammates can review for
-follow-up tasks.
+This repository contains ready-to-run hardening automation for Windows 10,
+Windows Server, and Debian-based Linux images that appear in CyberPatriot-style
+defensive competitions. Each script focuses on quickly configuring built-in
+protections, auditing local accounts, and generating a report that teammates can
+review for follow-up tasks.
+
+## Windows Server hardening script (`WindowsServer-Hardening.ps1`)
+
+### Usage
+
+1. Copy `WindowsServer-Hardening.ps1` to the target Windows Server machine.
+2. Launch PowerShell **as an administrator**.
+3. Review the authorized account lists for the image and update the command.
+4. Execute the script. Example:
+
+   ```powershell
+   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+   .\WindowsServer-Hardening.ps1 -AuthorizedAdmins 'Administrator','CyberAdmin' `
+       -AuthorizedUsers 'Administrator','CyberAdmin','SvcAccount' `
+       -AuthorizedRemoteDesktopUsers 'CyberAdmin' `
+       -AuthorizedRemoteManagementUsers 'CyberAdmin' -ForceRemediation
+   ```
+
+5. Review the generated log and transcript in `C:\CyberPatriot` (or the value of
+   the `-OutputDirectory` parameter) for follow-up tasks.
+
+### Parameters
+
+| Parameter | Description |
+| --- | --- |
+| `-AuthorizedAdmins` | Whitelisted local accounts that should stay in the local Administrators group. |
+| `-AuthorizedUsers` | Local accounts that are expected to exist on the system; unexpected accounts are flagged. |
+| `-AuthorizedRemoteDesktopUsers` | Accounts that may remain in the Remote Desktop Users group. |
+| `-AuthorizedRemoteManagementUsers` | Accounts that may remain in the Remote Management Users group for WinRM. |
+| `-OutputDirectory` | Destination for the log and transcript. Default is `C:\CyberPatriot`. |
+| `-ForceRemediation` | Remove unauthorized members from privileged local groups automatically. |
+| `-SkipRestorePoint` | Skip the attempt to create a system restore point. |
+| `-SkipTranscript` | Skip PowerShell transcription; the custom log file is still produced. |
+
+### Hardening actions performed
+
+* Create a dedicated log directory and optional PowerShell transcript for the session.
+* Attempt to create a system restore point for safety.
+* Configure Windows Update services and schedule.
+* Enable Windows Defender Firewall on all profiles.
+* Apply Microsoft Defender Antivirus preferences, update signatures, and start a quick scan.
+* Enforce password and account lockout policies.
+* Audit local accounts as well as Administrators, Remote Desktop Users, and Remote Management Users groups with optional remediation.
+* Harden Remote Desktop authentication, enforce single-session usage, and disable Remote Assistance.
+* Disable PowerShell remoting, configure WinRM to manual start, and block weak authentication methods.
+* Disable legacy or insecure services such as Remote Registry, SNMP, Telnet, SSDP, and UPnP when present.
+* Apply security option registry settings to restrict anonymous access, prevent LM hashes, and hide the last logged-on user.
+* Disable SMBv1, remove Windows PowerShell v2 components, and attempt to disable the SMBv1 server stack.
+* Configure advanced audit policies, expand event log sizes, and enable PowerShell script block and module logging.
+* Record the list of installed roles and notable features for team review.
+* Clear temporary directories to reclaim disk space.
+
+### Manual follow-up checklist
+
+After the script finishes:
+
+* Review the generated log for warnings about unexpected accounts, services, or registry settings that could not be applied.
+* Validate installed roles, features, and services against the competition readme, enabling any that are explicitly required.
+* Confirm remote access requirements for the image (RDP, WinRM) and re-enable components if the scoring guide mandates it.
+* Inspect shared folders, scheduled tasks, and startup programs for unapproved items.
+* Remove unapproved applications, browser extensions, and media files.
+* Verify Windows Defender Antivirus and Windows Update successfully complete scans shortly after hardening.
 
 ## Windows 10 hardening script (`Windows10-Hardening.ps1`)
 
