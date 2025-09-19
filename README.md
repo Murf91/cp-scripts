@@ -1,7 +1,7 @@
 # CyberPatriot Hardening Scripts
 
 This repository contains ready-to-run hardening automation for Windows 10,
-Windows Server, and Debian-based Linux images that appear in CyberPatriot-style
+Windows Server, Ubuntu, and Debian-based Linux images that appear in CyberPatriot-style
 defensive competitions. Each script focuses on quickly configuring built-in
 protections, auditing local accounts, and generating a report that teammates can
 review for follow-up tasks.
@@ -129,11 +129,71 @@ The script is intentionally conservative. After it finishes:
 The log captures each action taken so that team members and graders can quickly
 verify what was changed and what still needs manual attention.
 
+## Ubuntu hardening script (`Ubuntu-Hardening.sh`)
+
+### Usage
+
+1. Copy `Ubuntu-Hardening.sh` to the target Ubuntu workstation or server image.
+2. Review the authorized account lists and decide whether to skip Fail2Ban, snap, or desktop tweaks.
+3. Run the script as root (or with `sudo`). Example:
+
+   ```bash
+   sudo ./Ubuntu-Hardening.sh \
+     --authorized-admins "root,cyberadmin" \
+     --authorized-users "cyberadmin,student01,student02" \
+     --force-remediation \
+     --skip-desktop-hardening
+   ```
+
+4. Inspect the generated log in `/var/log/cyberpatriot` (or the value supplied
+   to `--output-directory`) for follow-up actions.
+
+### Parameters
+
+| Parameter | Description |
+| --- | --- |
+| `--authorized-admins` | Comma-separated local accounts allowed to remain in the sudo/admin group. |
+| `--authorized-users` | Expected interactive (UID ≥ 1000) local accounts; other accounts are flagged. |
+| `--sudo-group` | Name of the privileged group to audit. Defaults to `sudo`. |
+| `--output-directory` | Directory where logs are written. Defaults to `/var/log/cyberpatriot`. |
+| `--force-remediation` | Remove unauthorized sudo members and lock unexpected accounts automatically. |
+| `--skip-fail2ban` | Skip installing/configuring Fail2Ban if competition rules forbid it. |
+| `--skip-snap` | Skip snap refresh and policy configuration if snaps are restricted. |
+| `--skip-desktop-hardening` | Skip GNOME/lightdm guest restrictions and screen lock policies for server-only images. |
+
+### Hardening actions performed
+
+* Create a timestamped log and capture system context for competition reporting.
+* Refresh the APT package index, apply upgrades, and install baseline security tooling (UFW, unattended upgrades, AppArmor, auditd, pwquality, needrestart, optional Fail2Ban).
+* Configure unattended-upgrades to pull security, updates, and Extended Security Maintenance channels.
+* Reset the UFW firewall to deny inbound traffic by default while preserving SSH access, then enable logging.
+* Harden the OpenSSH daemon with stricter authentication, idle, and forwarding policies.
+* Enforce password-complexity controls via `pam_pwquality` and tighten `/etc/login.defs` settings.
+* Audit interactive users and sudo-group membership against the supplied allow-lists with optional automatic remediation.
+* Enable AppArmor enforcement, deploy auditd baseline rules, and refresh them.
+* Refresh snap packages, limit retained revisions, and schedule overnight refresh windows when snaps are present.
+* Disable guest logins, automatic logins, and enforce GNOME screen-lock behavior when a desktop environment is detected.
+* Purge insecure legacy networking or remote-control packages (telnet, rsh, vino, etc.) and disable associated services.
+* Clean package caches to reclaim disk space after hardening.
+
+### Manual follow-up checklist
+
+After the script completes:
+
+* Review `/var/log/cyberpatriot` for warnings about unexpected accounts, services, or skipped tasks (snap/desktop/AppArmor).
+* Confirm sudo membership, interactive accounts, and SSH access align with the competition readme.
+* Verify AppArmor and auditd are active (`aa-status --summary`, `service auditd status`) and that Fail2Ban is protecting SSH if enabled.
+* Check `snap list` and `snap refresh --time` to ensure competition requirements for snaps are satisfied or to adjust schedules if needed.
+* Validate desktop behavior (login screen, idle lock, screen blanking) matches scoring requirements when a GUI is present.
+* Inspect running services, open ports, scheduled tasks, and installed applications for items that must remain enabled for scoring.
+* Remove disallowed software, media files, and browser extensions not handled automatically.
+
+
 ## Debian-based Linux hardening script (`Debian-Hardening.sh`)
 
 ### Usage
 
-1. Copy `Debian-Hardening.sh` to the target Debian or Ubuntu workstation or server.
+1. Copy `Debian-Hardening.sh` to the target Debian workstation or derivative server. For Ubuntu desktop-focused images, use `Ubuntu-Hardening.sh`.
 2. Review the authorized administrator and user lists for the image.
 3. Run the script as root (or with `sudo`). Example:
 
