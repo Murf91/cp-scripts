@@ -43,16 +43,20 @@ review for follow-up tasks.
 
 * Create a dedicated log directory and optional PowerShell transcript for the session.
 * Attempt to create a system restore point for safety.
-* Configure Windows Update services and schedule.
+* Configure Windows Update services and schedule, then trigger scans, downloads, and installs.
 * Enable Windows Defender Firewall on all profiles.
 * Apply Microsoft Defender Antivirus preferences, update signatures, and start a quick scan.
-* Enforce password and account lockout policies.
+* Enforce password, account lockout, and password history policies.
 * Audit local accounts as well as Administrators, Remote Desktop Users, and Remote Management Users groups with optional remediation.
-* Harden Remote Desktop authentication, enforce single-session usage, and disable Remote Assistance.
+* Harden Remote Desktop settings, enforce single-session usage, disable Remote Assistance, and turn off Remote Desktop sharing unless the image requires it.
 * Disable PowerShell remoting, configure WinRM to manual start, and block weak authentication methods.
 * Disable legacy or insecure services such as Remote Registry, SNMP, Telnet, SSDP, and UPnP when present.
-* Apply security option registry settings to restrict anonymous access, prevent LM hashes, and hide the last logged-on user.
+* Apply security option registry settings to restrict anonymous access, prevent LM hashes, hide the last logged-on user, and require digitally signed SMB communications.
+* Disable administrative root shares to prevent exposing the system drive through default shares.
 * Disable SMBv1, remove Windows PowerShell v2 components, and attempt to disable the SMBv1 server stack.
+* Remove optional media playback features and uninstall prohibited software such as Hola VPN, Web Companion, VLC, and L0phtCrack when detected.
+* Attempt to upgrade Inkscape and GIMP through Winget or Chocolatey when they are installed.
+* Enforce the Firefox popup blocker through enterprise policies when Firefox is present.
 * Configure advanced audit policies, expand event log sizes, and enable PowerShell script block and module logging.
 * Record the list of installed roles and notable features for team review.
 * Clear temporary directories to reclaim disk space.
@@ -66,6 +70,7 @@ After the script finishes:
 * Confirm remote access requirements for the image (RDP, WinRM) and re-enable components if the scoring guide mandates it.
 * Inspect shared folders, scheduled tasks, and startup programs for unapproved items.
 * Remove unapproved applications, browser extensions, and media files.
+* Verify Inkscape and GIMP versions if they remain installed when no automated package manager was available.
 * Verify Windows Defender Antivirus and Windows Update successfully complete scans shortly after hardening.
 
 ## Windows 10 hardening script (`Windows10-Hardening.ps1`)

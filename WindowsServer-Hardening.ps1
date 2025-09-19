@@ -183,9 +183,12 @@ function Set-WindowsUpdatePolicy {
 
     try {
         UsoClient StartScan | Out-Null
+        UsoClient StartDownload | Out-Null
+        UsoClient StartInstall | Out-Null
+        Write-Log -Message 'Triggered Windows Update scan, download, and install tasks.'
     }
     catch {
-        Write-Log -Message 'UsoClient not available to trigger Windows Update scan.' -Level Warning
+        Write-Log -Message 'UsoClient not available to trigger Windows Update operations.' -Level Warning
     }
 }
 
@@ -211,7 +214,7 @@ function Harden-WindowsDefender {
 
 function Set-LocalAccountPolicies {
     Write-Log -Message 'Setting local password and account lockout policies.'
-    $command = 'net accounts /minpwlen:12 /maxpwage:30 /minpwage:1 /lockoutthreshold:5 /lockoutduration:30 /lockoutwindow:30'
+    $command = 'net accounts /minpwlen:12 /maxpwage:30 /minpwage:1 /lockoutthreshold:5 /lockoutduration:30 /lockoutwindow:30 /uniquepw:24'
     try {
         $result = cmd.exe /c $command
         foreach ($line in $result) { Write-Log -Message $line }
@@ -340,9 +343,19 @@ function Harden-RemoteAccessFeatures {
         Set-RegistryDword -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 1
         Set-RegistryDword -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'SecurityLayer' -Value 2
         Set-RegistryDword -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Name 'fSingleSessionPerUser' -Value 1
+        Set-RegistryDword -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 1
     }
     catch {
         Write-Log -Message 'Failed to harden Remote Desktop authentication requirements.' -Level Warning
+    }
+
+    try {
+        Set-Service -Name 'TermService' -StartupType Disabled
+        Stop-Service -Name 'TermService' -Force -ErrorAction SilentlyContinue
+        Write-Log -Message 'Remote Desktop Services stopped and disabled to turn off remote desktop sharing.'
+    }
+    catch {
+        Write-Log -Message 'Unable to disable Remote Desktop Services. Review manually.' -Level Warning
     }
 }
 
@@ -415,14 +428,44 @@ function Set-SecurityOptions {
         Set-RegistryDword -Path $lsaPath -Name 'DisableDomainCreds' -Value 1
         Set-RegistryDword -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest' -Name 'UseLogonCredential' -Value 0
         Set-RegistryDword -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name 'DontDisplayLastUserName' -Value 1
+        $lanmanPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+        Set-RegistryDword -Path $lanmanPath -Name 'RequireSecuritySignature' -Value 1
+        Set-RegistryDword -Path $lanmanPath -Name 'EnableSecuritySignature' -Value 1
     }
     catch {
         Write-Log -Message "Failed to apply security option registry settings. $_" -Level Warning
     }
 }
 
+function Disable-AdministrativeShares {
+    Write-Log -Message 'Disabling administrative root shares to protect the system drive.'
+    try {
+        $lanmanPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
+        Set-RegistryDword -Path $lanmanPath -Name 'AutoShareServer' -Value 0
+    }
+    catch {
+        Write-Log -Message 'Unable to configure AutoShareServer registry value.' -Level Warning
+    }
+
+    try {
+        $shares = Get-SmbShare -ErrorAction Stop | Where-Object { $_.Special -and $_.Name -match '^[A-Z]\$' }
+        foreach ($share in $shares) {
+            try {
+                Remove-SmbShare -Name $share.Name -Force -ErrorAction Stop
+                Write-Log -Message "Removed administrative share $($share.Name)."
+            }
+            catch {
+                Write-Log -Message "Unable to remove share $($share.Name). $_" -Level Warning
+            }
+        }
+    }
+    catch {
+        Write-Log -Message 'Could not enumerate SMB shares. Verify file sharing status manually.' -Level Warning
+    }
+}
+
 function Disable-LegacyProtocols {
-    Write-Log -Message 'Disabling legacy network protocols (SMBv1, PowerShell v2).' 
+    Write-Log -Message 'Disabling legacy network protocols (SMBv1, PowerShell v2).'
     try {
         Disable-WindowsOptionalFeature -Online -FeatureName 'SMB1Protocol' -NoRestart -ErrorAction Stop | Out-Null
     }
@@ -443,6 +486,208 @@ function Disable-LegacyProtocols {
     }
     catch {
         Write-Log -Message 'Unable to disable Windows PowerShell v2 components.' -Level Warning
+    }
+}
+
+function Disable-MediaFeatures {
+    Write-Log -Message 'Removing optional media playback features.'
+    $featureNames = @('WindowsMediaPlayer', 'MediaPlayback', 'MediaCenter')
+    foreach ($feature in $featureNames) {
+        $featureInfo = Get-WindowsOptionalFeature -Online -FeatureName $feature -ErrorAction SilentlyContinue
+        if (-not $featureInfo) {
+            continue
+        }
+
+        if ($featureInfo.State -ne 'Disabled') {
+            try {
+                Disable-WindowsOptionalFeature -Online -FeatureName $feature -NoRestart -ErrorAction Stop | Out-Null
+                Write-Log -Message "Disabled optional feature $feature."
+            }
+            catch {
+                Write-Log -Message "Unable to disable optional feature $feature. $_" -Level Warning
+            }
+        }
+    }
+}
+
+function Get-InstalledApplications {
+    $registryPaths = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+
+    $applications = @()
+    foreach ($path in $registryPaths) {
+        $items = Get-ItemProperty -Path $path -ErrorAction SilentlyContinue
+        foreach ($item in $items) {
+            if (-not $item.DisplayName) {
+                continue
+            }
+
+            $applications += [PSCustomObject]@{
+                DisplayName = $item.DisplayName
+                UninstallString = $item.UninstallString
+                QuietUninstallString = $item.QuietUninstallString
+            }
+        }
+    }
+
+    return $applications | Sort-Object -Property DisplayName -Unique
+}
+
+function Invoke-UninstallCommand {
+    param(
+        [Parameter(Mandatory)][string]$Command
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Command)) {
+        return $false
+    }
+
+    $commandText = $Command.Trim()
+    if ($commandText -match '(?i)msiexec') {
+        $commandText = [regex]::Replace($commandText, '(?i)/I(?=\s*[{/])', '/x')
+        if ($commandText -notmatch '(?i)/x') {
+            $commandText = "$commandText /x"
+        }
+        if ($commandText -notmatch '(?i)/qn') {
+            $commandText = "$commandText /qn"
+        }
+        if ($commandText -notmatch '(?i)/quiet') {
+            $commandText = "$commandText /quiet"
+        }
+        if ($commandText -notmatch '(?i)/norestart') {
+            $commandText = "$commandText /norestart"
+        }
+    }
+
+    Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', $commandText) -WindowStyle Hidden -Wait | Out-Null
+    return $true
+}
+
+function Remove-UnsafeApplications {
+    Write-Log -Message 'Removing unsafe or prohibited third-party applications.'
+    $targets = @(
+        @{ Pattern = 'L[o0]phtCrack'; Reason = 'Password auditing tool' },
+        @{ Pattern = 'Hola'; Reason = 'Hola VPN' },
+        @{ Pattern = 'Web\s*Companion'; Reason = 'Potentially unwanted program' },
+        @{ Pattern = 'VLC'; Reason = 'Third-party media player' },
+        @{ Pattern = 'Winamp'; Reason = 'Third-party media player' },
+        @{ Pattern = 'Media Player Classic'; Reason = 'Third-party media player' },
+        @{ Pattern = 'GOM Player'; Reason = 'Third-party media player' }
+    )
+
+    $applications = Get-InstalledApplications
+    if (-not $applications -or $applications.Count -eq 0) {
+        Write-Log -Message 'No installed applications discovered via registry query; skipping removal routine.'
+        return
+    }
+
+    foreach ($target in $targets) {
+        $matches = $applications | Where-Object { $_.DisplayName -and $_.DisplayName -match $target.Pattern }
+        foreach ($match in $matches) {
+            $command = if ($match.QuietUninstallString) { $match.QuietUninstallString } else { $match.UninstallString }
+            if ([string]::IsNullOrWhiteSpace($command)) {
+                Write-Log -Message "No uninstall command found for $($match.DisplayName); remove manually." -Level Warning
+                continue
+            }
+
+            try {
+                Invoke-UninstallCommand -Command $command | Out-Null
+                Write-Log -Message "Attempted to uninstall $($match.DisplayName) ($($target.Reason))."
+            }
+            catch {
+                Write-Log -Message "Failed to uninstall $($match.DisplayName). $_" -Level Warning
+            }
+        }
+    }
+}
+
+function Update-ThirdPartyApplications {
+    Write-Log -Message 'Checking for updates to competition applications (Inkscape, GIMP).'
+    $applications = Get-InstalledApplications
+    $targets = @(
+        @{ Pattern = 'Inkscape'; FriendlyName = 'Inkscape'; WingetId = 'Inkscape.Inkscape'; ChocoId = 'inkscape' },
+        @{ Pattern = 'GIMP'; FriendlyName = 'GIMP'; WingetId = 'GIMP.GIMP'; ChocoId = 'gimp' }
+    )
+
+    $winget = Get-Command -Name 'winget' -ErrorAction SilentlyContinue
+    $choco = Get-Command -Name 'choco' -ErrorAction SilentlyContinue
+
+    foreach ($target in $targets) {
+        $matches = $applications | Where-Object { $_.DisplayName -and $_.DisplayName -match $target.Pattern }
+        if (-not $matches -or $matches.Count -eq 0) {
+            Write-Log -Message "$($target.FriendlyName) not detected; skipping automatic update."
+            continue
+        }
+
+        $updated = $false
+        if ($winget) {
+            try {
+                Start-Process -FilePath $winget.Source -ArgumentList @('upgrade', '--id', $target.WingetId, '--silent', '--accept-package-agreements', '--accept-source-agreements') -WindowStyle Hidden -Wait | Out-Null
+                Write-Log -Message "Winget triggered upgrade for $($target.FriendlyName)."
+                $updated = $true
+            }
+            catch {
+                Write-Log -Message "Winget upgrade for $($target.FriendlyName) failed. $_" -Level Warning
+            }
+        }
+
+        if (-not $updated -and $choco) {
+            try {
+                Start-Process -FilePath $choco.Source -ArgumentList @('upgrade', $target.ChocoId, '-y') -WindowStyle Hidden -Wait | Out-Null
+                Write-Log -Message "Chocolatey triggered upgrade for $($target.FriendlyName)."
+                $updated = $true
+            }
+            catch {
+                Write-Log -Message "Chocolatey upgrade for $($target.FriendlyName) failed. $_" -Level Warning
+            }
+        }
+
+        if (-not $updated -and -not $winget -and -not $choco) {
+            Write-Log -Message 'No supported package managers detected for application updates.' -Level Warning
+            break
+        }
+
+        if (-not $updated) {
+            Write-Log -Message "Verify $($target.FriendlyName) manually for the latest version." -Level Warning
+        }
+    }
+}
+
+function Ensure-FirefoxPopupBlocking {
+    Write-Log -Message 'Ensuring the Firefox popup blocker remains enabled.'
+    $paths = @()
+    if ($env:ProgramFiles) {
+        $paths += (Join-Path -Path $env:ProgramFiles -ChildPath 'Mozilla Firefox')
+    }
+    if (${env:ProgramFiles(x86)}) {
+        $paths += (Join-Path -Path ${env:ProgramFiles(x86)} -ChildPath 'Mozilla Firefox')
+    }
+
+    $paths = $paths | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+    if (-not $paths -or $paths.Count -eq 0) {
+        Write-Log -Message 'Firefox not detected; popup blocker policy skipped.'
+        return
+    }
+
+    $policyContent = @{ policies = @{ PopupBlocking = @{ Default = $true; Locked = $true } } } | ConvertTo-Json -Depth 4
+
+    foreach ($installPath in $paths) {
+        try {
+            $distributionPath = Join-Path -Path $installPath -ChildPath 'distribution'
+            if (-not (Test-Path -LiteralPath $distributionPath)) {
+                New-Item -Path $distributionPath -ItemType Directory -Force | Out-Null
+            }
+
+            $policyPath = Join-Path -Path $distributionPath -ChildPath 'policies.json'
+            Set-Content -Path $policyPath -Value $policyContent -Encoding UTF8
+            Write-Log -Message "Firefox popup blocking policy written to $policyPath."
+        }
+        catch {
+            Write-Log -Message "Unable to enforce Firefox popup blocking under $installPath. $_" -Level Warning
+        }
     }
 }
 
@@ -562,10 +807,15 @@ try {
     Invoke-HardeningStep -Name 'Lock down WinRM' -Action { Harden-WinRM }
     Invoke-HardeningStep -Name 'Disable insecure services' -Action { Disable-InsecureServices }
     Invoke-HardeningStep -Name 'Apply security option registry settings' -Action { Set-SecurityOptions }
+    Invoke-HardeningStep -Name 'Disable administrative root shares' -Action { Disable-AdministrativeShares }
     Invoke-HardeningStep -Name 'Disable legacy protocols and features' -Action { Disable-LegacyProtocols }
+    Invoke-HardeningStep -Name 'Remove media playback optional features' -Action { Disable-MediaFeatures }
     Invoke-HardeningStep -Name 'Configure audit policy' -Action { Set-AuditPolicyBaseline }
     Invoke-HardeningStep -Name 'Increase event log retention' -Action { Set-EventLogRetention }
     Invoke-HardeningStep -Name 'Enable PowerShell logging' -Action { Enable-PowerShellLogging }
+    Invoke-HardeningStep -Name 'Remove unsafe or prohibited software' -Action { Remove-UnsafeApplications }
+    Invoke-HardeningStep -Name 'Update Inkscape and GIMP if installed' -Action { Update-ThirdPartyApplications }
+    Invoke-HardeningStep -Name 'Enforce Firefox popup blocking policy' -Action { Ensure-FirefoxPopupBlocking }
     Invoke-HardeningStep -Name 'Record server roles and features' -Action { Write-ServerRoleSummary }
     Invoke-HardeningStep -Name 'Clear temporary directories' -Action { Clear-TemporaryDirectories }
 }
